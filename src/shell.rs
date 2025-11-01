@@ -79,11 +79,28 @@ impl Shell {
         match cmd {
             "cd" => {
                 if let Some(target_dir_str) = rest_args.first() {
-                    let target_dir = PathBuf::from(target_dir_str);
-                    if !target_dir.is_dir() {
+                    let target_dir = if target_dir_str == "~" {
+                        // Handle home directory shortcut
+                        self.home_dir.clone()
+                    } else {
+                        let path = PathBuf::from(target_dir_str);
+                        if path.is_absolute() {
+                            // Absolute path
+                            path
+                        } else {
+                            // Relative path - join with current directory
+                            self.curr_dir.join(path)
+                        }
+                    };
+                    // Canonicalize the path to resolve .. and . components
+                    let canonical_path = target_dir
+                        .canonicalize()
+                        .map_err(|e| format!("cd: {}: No such file or directory", e))?;
+
+                    if !canonical_path.is_dir() {
                         return Err(format!("cd: '{}' is not a directory", target_dir_str));
                     }
-                    self.cd(target_dir);
+                    self.cd(canonical_path);
                 } else {
                     self.cd(self.home_dir.clone());
                 }

@@ -1,13 +1,12 @@
 mod shell;
 
-use std::io;
+use std::process::ExitCode;
 
 use crate::shell::Shell;
 
-fn main() -> io::Result<()> {
+fn main() -> ExitCode {
     let mut shell = Shell::new();
-
     shell.run();
 
-    Ok(())
+    ExitCode::SUCCESS
 }
