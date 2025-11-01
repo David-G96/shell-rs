@@ -1,22 +1,27 @@
 use std::{
-    io::{Write, stdin, stdout},
+    io::Write,
     path::PathBuf,
-    process::{Child, Command, ExitStatus, Output, Stdio},
+    process::{Command, Output, Stdio},
 };
 
 #[derive(Debug)]
 pub struct Shell {
     curr_dir: PathBuf,
+    #[allow(dead_code)]
     args: Vec<String>,
+    prompt: String,
+    home_dir: PathBuf,
 }
 
 impl Shell {
     pub fn new() -> Self {
         let args = std::env::args();
-        let dir = dirs::home_dir().expect("Unable to find home!");
+        let home_dir = dirs::home_dir().expect("Unable to find home!");
         Self {
-            curr_dir: dir,
+            curr_dir: home_dir.clone(),
             args: args.collect(),
+            prompt: "shell-rs> ".to_string(),
+            home_dir,
         }
     }
 
@@ -24,10 +29,6 @@ impl Shell {
     pub fn cd(&mut self, path: PathBuf) {
         debug_assert!(path.is_dir(), "cd could only move to a directory!");
         self.curr_dir = path;
-    }
-
-    pub fn pwd(&self) {
-        println!("{}", self.curr_dir.to_str().unwrap());
     }
 
     pub fn read_line() -> Result<Vec<String>, String> {
@@ -45,59 +46,132 @@ impl Shell {
             .collect())
     }
 
-    pub fn ls(&mut self) -> Output {
+    /// Internal command: ls
+    /// # NOTE
+    ///  current implementation uses a system call of ls, which is NOT portable
+    pub fn ls(&mut self, rest_args: &[String]) -> Result<Output, String> {
         let child = Command::new("ls")
             .arg(self.curr_dir.as_os_str())
+            .args(rest_args)
             .stdout(Stdio::piped())
-            .spawn()
-            .expect("failed to call ls");
+            .spawn();
 
-        let output = child
-            .wait_with_output()
-            .expect("failed to get the output of ls");
-        output
+        let child = match child {
+            Ok(child) => child,
+            Err(e) => return Err(format!("failed to call ls: {}", e)),
+        };
+
+        let output = child.wait_with_output();
+
+        match output {
+            Ok(output) => Ok(output),
+            Err(e) => Err(format!("failed to get the output of ls: {}", e)),
+        }
+    }
+
+    /// execute an internal command, panics if the cmd is not a internal command
+    /// if the internal command has a output, Ok(Some(output)) will be returned
+    pub fn execute_internal(
+        &mut self,
+        cmd: &str,
+        rest_args: &[String],
+    ) -> Result<Option<String>, String> {
+        match cmd {
+            "cd" => {
+                if let Some(target_dir_str) = rest_args.first() {
+                    let target_dir = PathBuf::from(target_dir_str);
+                    if !target_dir.is_dir() {
+                        return Err(format!("cd: '{}' is not a directory", target_dir_str));
+                    }
+                    self.cd(target_dir);
+                } else {
+                    self.cd(self.home_dir.clone());
+                }
+                return Ok(None);
+            }
+            "pwd" => {
+                return Ok(Some(
+                    self.curr_dir
+                        .to_str()
+                        .ok_or("pwd: current directory is not valid UTF-8")?
+                        .to_string(),
+                ));
+            }
+            s => {
+                unreachable!(
+                    "internal logic error: reaching a unconsidered internal command: '{}'",
+                    s
+                )
+            }
+        }
+    }
+
+    pub fn execute_external(&mut self, cmd: &str, rest_args: &[String]) -> Result<Output, String> {
+        match cmd {
+            "ls" => {
+                return self.ls(rest_args);
+            }
+            s => {
+                unreachable!(
+                    "internal error: reaching a unreachable external command: '{}'",
+                    s
+                )
+            }
+        }
     }
 
     /// execute the command.
     pub fn execute(&mut self, args: &Vec<String>) -> Result<(), ()> {
-        if let Some(cmd) = args.first() {
+        if let Some((cmd, rest_args)) = args.split_first() {
             match cmd.as_str() {
-                "cd" => {
-                    if let Some(target_dir_str) = args.get(1) {
-                        let target_dir = PathBuf::from(target_dir_str);
-                        if !target_dir.is_dir() {
-                            eprintln!("cd: '{}' is not a directory", target_dir_str);
-                            return Err(());
-                        }
-                        self.cd(target_dir);
+                "cd" | "pwd" => {
+                    let internal_result = self.execute_internal(cmd, rest_args);
+                    match internal_result {
+                        Ok(Some(output)) => println!("{}", &output),
+                        Err(err) => eprintln!("{}", &err),
+                        _ => {}
                     }
                 }
-                "pwd" => {
-                    self.pwd();
-                }
                 "ls" => {
-                    let output = self.ls();
-                    std::io::stdout()
-                        .write_all(&output.stdout)
-                        .expect("failed to write to stdout while showing the output of ls");
+                    let external_result = self.execute_external(cmd, rest_args);
+                    match external_result {
+                        Ok(output) => {
+                            if !output.stdout.is_empty() {
+                                match String::from_utf8(output.stdout) {
+                                    Ok(stdout) => println!("{}", stdout),
+                                    Err(e) => eprintln!("Failed to parse stdout: {}", e),
+                                }
+                            }
+                            if !output.stderr.is_empty() {
+                                match String::from_utf8(output.stderr) {
+                                    Ok(stderr) => eprintln!("{}", stderr),
+                                    Err(e) => eprintln!("Failed to parse stderr: {}", e),
+                                }
+                            }
+                        }
+                        Err(err) => eprintln!("{}", &err),
+                    }
                 }
                 _ => {
-                    unimplemented!("only supports cd for now")
+                    println!("unknown command: '{}'", cmd)
                 }
             }
         }
+
         Ok(())
     }
 
     pub fn run(&mut self) {
         loop {
-            print!("simple_shell> ");
+            print!("{}", self.prompt);
             std::io::stdout().flush().unwrap();
             let args = Self::read_line().unwrap();
+            // exit command, exit loop immediately
             if let Some("exit") = args.first().map(|s| s.as_str()) {
                 println!("exiting...");
                 break;
             }
+            // regular command, execute it
             let _ = self.execute(&args);
         }
     }
