@@ -1,7 +1,7 @@
 use std::{
-    io::Write,
+    io::{Stdin, Write},
     path::PathBuf,
-    process::{Command, Output, Stdio},
+    process::{Child, Command, Output, Stdio},
 };
 
 #[derive(Debug)]
@@ -31,6 +31,7 @@ impl Shell {
         self.curr_dir = path;
     }
 
+    /// read a line from stdin
     pub fn read_line() -> Result<Vec<String>, String> {
         let mut buffer = String::new();
         let stdin = std::io::stdin();
@@ -50,19 +51,29 @@ impl Shell {
     /// # NOTE
     ///  current implementation uses a system call of ls, which is NOT portable
     pub fn ls(&mut self, rest_args: &[String]) -> Result<Output, String> {
-        let child = Command::new("ls")
-            .arg(self.curr_dir.as_os_str())
-            .args(rest_args)
-            .stdout(Stdio::piped())
-            .spawn();
+        // default path: pwd
+        let child = if rest_args
+            .last()
+            .map(|s| s.trim().starts_with("-"))
+            .unwrap_or(false)
+        {
+            Command::new("ls")
+                .args(rest_args)
+                .arg(self.curr_dir.as_os_str())
+                .stdout(Stdio::piped())
+                .spawn()
+        } else {
+            Command::new("ls")
+                .args(rest_args)
+                .stdout(Stdio::piped())
+                .spawn()
+        };
 
         let child = match child {
             Ok(child) => child,
             Err(e) => return Err(format!("failed to call ls: {}", e)),
         };
-
         let output = child.wait_with_output();
-
         match output {
             Ok(output) => Ok(output),
             Err(e) => Err(format!("failed to get the output of ls: {}", e)),
